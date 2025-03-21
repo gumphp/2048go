@@ -257,51 +257,77 @@ func (g *Game) move(direction int) bool {
 func (g *Game) prepareAnimations() {
 	g.animations = []TileAnimation{}
 	
-	// 跟踪已经添加到动画列表的目标位置
-	animatedTiles := make(map[[2]int]bool)
-	
-	// 遍历当前棋盘
+	// 标记当前棋盘上的方块，用于识别新生成的方块
+	currentTiles := make(map[[2]int]bool)
 	for i := 0; i < boardSize; i++ {
 		for j := 0; j < boardSize; j++ {
-			// 如果当前位置有方块
 			if g.board[i][j] != 0 {
-				// 查找这个方块在前一个状态的位置
+				currentTiles[[2]int{i, j}] = true
+			}
+		}
+	}
+	
+	// 遍历前一个状态的棋盘
+	for pi := 0; pi < boardSize; pi++ {
+		for pj := 0; pj < boardSize; pj++ {
+			// 如果前一个状态该位置有方块
+			if g.previousBoard[pi][pj] != 0 {
+				// 查找该方块在当前棋盘的位置
 				found := false
+				value := g.previousBoard[pi][pj]
 				
-				// 如果是新生成的方块(在前一个状态中没有这个值)，跳过
-				// 我们只为移动的方块创建动画
-				
-				// 查找可能的来源位置
-				for pi := 0; pi < boardSize; pi++ {
-					for pj := 0; pj < boardSize; pj++ {
-						// 如果在前一个状态有相同值的方块(或者是合并的结果)
-						if g.previousBoard[pi][pj] != 0 && 
-							(g.previousBoard[pi][pj] == g.board[i][j] || 
-							 g.previousBoard[pi][pj]*2 == g.board[i][j]) && 
-							!(pi == i && pj == j) {
+				// 如果是移动而非合并的情况，在当前棋盘中查找相同值的方块
+				for i := 0; i < boardSize; i++ {
+					for j := 0; j < boardSize; j++ {
+						// 如果当前棋盘有相同值的方块，并且不在原位置
+						if g.board[i][j] == value && !(i == pi && j == pj) && !found {
+							// 为这个方块创建移动动画
+							g.animations = append(g.animations, TileAnimation{
+								fromX:   pj,
+								fromY:   pi,
+								toX:     j,
+								toY:     i,
+								value:   value,
+								progress: 0,
+							})
 							
-							// 确保我们还没有为这个目标位置创建动画
-							posKey := [2]int{i, j}
-							if !animatedTiles[posKey] {
-								// 添加到动画列表
+							// 标记该方块已经找到，避免重复添加
+							currentTiles[[2]int{i, j}] = false
+							found = true
+							break
+						}
+					}
+					if found {
+						break
+					}
+				}
+				
+				// 如果没找到相同值的方块，可能是被合并了
+				if !found {
+					// 查找值是原来两倍的方块（合并结果）
+					mergedValue := value * 2
+					for i := 0; i < boardSize; i++ {
+						for j := 0; j < boardSize; j++ {
+							if g.board[i][j] == mergedValue && currentTiles[[2]int{i, j}] {
+								// 为这个方块创建移动动画
 								g.animations = append(g.animations, TileAnimation{
 									fromX:   pj,
 									fromY:   pi,
 									toX:     j,
 									toY:     i,
-									value:   g.previousBoard[pi][pj],
+									value:   value,
 									progress: 0,
 								})
 								
-								// 标记这个目标位置已经有动画了
-								animatedTiles[posKey] = true
+								// 标记该位置已处理过
+								currentTiles[[2]int{i, j}] = false
 								found = true
 								break
 							}
 						}
-					}
-					if found {
-						break
+						if found {
+							break
+						}
 					}
 				}
 			}
@@ -523,7 +549,7 @@ func (g *Game) Update() error {
 
 	// 更新动画状态
 	if g.animating {
-		g.animationProgress += 0.1
+		g.animationProgress += 0.15  // 调快动画速度
 		if g.animationProgress >= 1.0 {
 			g.animating = false
 			g.animationProgress = 0
@@ -532,23 +558,25 @@ func (g *Game) Update() error {
 	}
 
 	// 处理按键输入
-	if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
-		g.move(DirectionUp)
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-		g.move(DirectionRight)
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
-		g.move(DirectionDown)
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
-		g.move(DirectionLeft)
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
-		// 重置游戏
-		g.resetGame()
-		g.showMessage("游戏已重置", 60)
-	} else if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-		// 如果已经赢了，继续游戏
-		if g.win && g.showWin {
-			g.showWin = false
-			g.showMessage("继续游戏", 60)
+	if !g.animating {  // 只有在没有动画时才处理输入
+		if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
+			g.move(DirectionUp)
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
+			g.move(DirectionRight)
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
+			g.move(DirectionDown)
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
+			g.move(DirectionLeft)
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+			// 重置游戏
+			g.resetGame()
+			g.showMessage("游戏已重置", 60)
+		} else if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			// 如果已经赢了，继续游戏
+			if g.win && g.showWin {
+				g.showWin = false
+				g.showMessage("继续游戏", 60)
+			}
 		}
 	}
 
