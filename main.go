@@ -807,7 +807,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	drawScorePanel(screen, "最高分", g.bestScore, screenWidth-100, 90)
 
 	// 绘制游戏说明
-	text.Draw(screen, "方向键移动 | R键重置 | S键保存 | L键加载", scoreFont, screenWidth/2-170, 150, textColor)
+	instructionText := "R键重置 | S键保存 | L键加载"
+	// 计算文本宽度以居中显示
+	bounds, _ := font.BoundString(scoreFont, instructionText)
+	textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+	
+	// 绘制半透明背景确保文字清晰可见
+	// ebitenutil.DrawRect(screen, float64(screenWidth/2-textWidth/2-10), 130, float64(textWidth+20), 30, color.RGBA{187, 173, 160, 200})
+	text.Draw(screen, instructionText, scoreFont, screenWidth/2-textWidth/2, 150, textColor)
 
 	// 绘制游戏棋盘(只绘制背景和空格)
 	drawBoard(screen, g.board)
