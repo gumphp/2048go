@@ -905,7 +905,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				// 在移动完成后半段添加合并效果
 				// 先稍微放大
 				p := (progress - 0.5) * 2 // 将0.5-1.0映射到0-1.0
-				scale = 1.0 + 0.2*sinWave(p) // 使用正弦波实现缩放效果
+				scale = 1.0 + 0.3*sinWave(p) // 使用正弦波实现缩放效果
 				
 				// 计算透明度变化
 				alpha = sinWave(p)
@@ -970,26 +970,45 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				targetY := boardY + anim.toY*(tileSize+tileMargin)
 				targetValue := anim.value * 2
 				
-				// 获取目标方块颜色
-				var targetColor color.RGBA
+				// 获取目标方块颜色和源方块颜色
+				var targetColor, sourceColor color.RGBA
 				if val, ok := tileColors[targetValue]; ok {
 					targetColor = val
 				} else {
 					targetColor = tileColors[2048]
 				}
 				
+				if val, ok := tileColors[anim.value]; ok {
+					sourceColor = val
+				} else {
+					sourceColor = tileColors[2048]
+				}
+				
 				// 计算从0到1的渐变进度
 				fadeInProgress := (progress - 0.85) / 0.15
 				
-				// 计算缩放效果
-				targetScale := 1.0 + 0.2*(1-fadeInProgress)
+				// 颜色过渡效果
+				currentColor := lerpColor(sourceColor, targetColor, fadeInProgress)
+				
+				// 计算缩放效果 - 使用弹性函数
+				targetScale := 1.0 + 0.3*elasticOut(fadeInProgress)
 				targetSize := float64(tileSize) * targetScale
 				targetOffsetX := (targetSize - float64(tileSize)) / 2
 				targetOffsetY := (targetSize - float64(tileSize)) / 2
 				
 				// 绘制目标方块
 				ebitenutil.DrawRect(screen, float64(targetX)-targetOffsetX, float64(targetY)-targetOffsetY, 
-									targetSize, targetSize, targetColor)
+									targetSize, targetSize, currentColor)
+				
+				// 绘制闪光效果
+				if fadeInProgress > 0.3 && fadeInProgress < 0.7 {
+					glowIntensity := 1.0 - math.Abs(fadeInProgress - 0.5) * 5.0 // 0.5时最强
+					glowColor := color.RGBA{255, 255, 255, uint8(100 * glowIntensity)}
+					glowSize := targetSize + 10*glowIntensity
+					ebitenutil.DrawRect(screen, float64(targetX)-(glowSize-float64(tileSize))/2, 
+										float64(targetY)-(glowSize-float64(tileSize))/2, 
+										glowSize, glowSize, glowColor)
+				}
 				
 				// 绘制目标数字
 				numStr := fmt.Sprintf("%d", targetValue)
@@ -1017,8 +1036,19 @@ func (g *Game) Draw(screen *ebiten.Image) {
 					textCol = textColorLight
 				}
 				
+				// 数字动画效果
+				textScale := 1.0 + 0.2*(1.0-fadeInProgress)
+				
 				// 绘制数字
-				text.Draw(screen, numStr, tFace, textX, textY, textCol)
+				op := &ebiten.DrawImageOptions{}
+				textImg := ebiten.NewImage(textWidth+10, textHeight+10)
+				text.Draw(textImg, numStr, tFace, 5, textHeight, textCol)
+				
+				op.GeoM.Translate(-float64(textWidth+10)/2, -float64(textHeight+10)/2)
+				op.GeoM.Scale(textScale, textScale)
+				op.GeoM.Translate(float64(textX+textWidth/2), float64(textY-textHeight/2))
+				
+				screen.DrawImage(textImg, op)
 			}
 		}
 	} else {
@@ -1268,4 +1298,24 @@ func easeOutQuad(t float64) float64 {
 // 正弦波函数 - 用于制作平滑的缩放和淡入淡出效果
 func sinWave(t float64) float64 {
 	return math.Sin(t * math.Pi / 2)
+}
+
+// 颜色渐变函数 - 在两个颜色之间平滑过渡
+func lerpColor(c1, c2 color.RGBA, t float64) color.RGBA {
+	return color.RGBA{
+		R: uint8(float64(c1.R) + t*(float64(c2.R)-float64(c1.R))),
+		G: uint8(float64(c1.G) + t*(float64(c2.G)-float64(c1.G))),
+		B: uint8(float64(c1.B) + t*(float64(c2.B)-float64(c1.B))),
+		A: uint8(float64(c1.A) + t*(float64(c2.A)-float64(c1.A))),
+	}
+}
+
+// 弹性函数 - 制作有弹性的效果
+func elasticOut(t float64) float64 {
+	if t == 0 || t == 1 {
+		return t
+	}
+	p := 0.3 // 弹性系数
+	s := p / 4.0
+	return math.Pow(2, -10*t) * math.Sin((t-s)*(2*math.Pi)/p) + 1
 } 
