@@ -62,26 +62,44 @@ var (
 	chineseFont font.Face
 )
 
+// 移动动画的持续时间
+const animationDuration = 10
+
+// 方块动画状态
+type TileAnimation struct {
+	fromX, fromY int
+	toX, toY     int
+	value        int
+	progress     float64
+}
+
 // Game 代表游戏状态
 type Game struct {
-	board      [boardSize][boardSize]int
-	score      int
-	bestScore  int
-	gameOver   bool
-	win        bool
-	showWin    bool
-	message    string
-	messageTime int
+	board             [boardSize][boardSize]int
+	previousBoard     [boardSize][boardSize]int // 用于保存移动前的棋盘状态
+	score             int
+	bestScore         int
+	gameOver          bool
+	win               bool
+	showWin           bool
+	message           string
+	messageTime       int
+	animating         bool         // 是否正在执行动画
+	animationProgress float64      // 动画进度 (0.0 - 1.0)
+	animations        []TileAnimation // 方块动画列表
 }
 
 // 初始化游戏
 func NewGame() *Game {
 	g := &Game{
-		score:     0,
-		bestScore: 0,
-		gameOver:  false,
-		win:       false,
-		showWin:   true,
+		score:            0,
+		bestScore:        0,
+		gameOver:         false,
+		win:              false,
+		showWin:          true,
+		animating:        false,
+		animationProgress: 0,
+		animations:       []TileAnimation{},
 	}
 	g.initBoard()
 	return g
@@ -189,6 +207,18 @@ const (
 
 // 移动方块
 func (g *Game) move(direction int) bool {
+	// 如果正在动画中，不处理输入
+	if g.animating {
+		return false
+	}
+
+	// 保存移动前的棋盘状态用于动画
+	for i := 0; i < boardSize; i++ {
+		for j := 0; j < boardSize; j++ {
+			g.previousBoard[i][j] = g.board[i][j]
+		}
+	}
+	
 	moved := false
 	
 	// 根据方向进行移动
@@ -203,9 +233,15 @@ func (g *Game) move(direction int) bool {
 		moved = g.moveLeft()
 	}
 
-	// 如果有移动，添加一个随机方块
+	// 如果有移动，添加一个随机方块并准备动画
 	if moved {
-		g.addRandomTile()
+		// 为移动的方块创建动画
+		g.prepareAnimations()
+		
+		// 开始动画
+		g.animating = true
+		g.animationProgress = 0
+		
 		g.checkWin()
 		
 		// 检查游戏是否结束
@@ -215,6 +251,65 @@ func (g *Game) move(direction int) bool {
 	}
 
 	return moved
+}
+
+// 准备方块移动动画
+func (g *Game) prepareAnimations() {
+	g.animations = []TileAnimation{}
+	
+	// 跟踪已经添加到动画列表的目标位置
+	animatedTiles := make(map[[2]int]bool)
+	
+	// 遍历当前棋盘
+	for i := 0; i < boardSize; i++ {
+		for j := 0; j < boardSize; j++ {
+			// 如果当前位置有方块
+			if g.board[i][j] != 0 {
+				// 查找这个方块在前一个状态的位置
+				found := false
+				
+				// 如果是新生成的方块(在前一个状态中没有这个值)，跳过
+				// 我们只为移动的方块创建动画
+				
+				// 查找可能的来源位置
+				for pi := 0; pi < boardSize; pi++ {
+					for pj := 0; pj < boardSize; pj++ {
+						// 如果在前一个状态有相同值的方块(或者是合并的结果)
+						if g.previousBoard[pi][pj] != 0 && 
+							(g.previousBoard[pi][pj] == g.board[i][j] || 
+							 g.previousBoard[pi][pj]*2 == g.board[i][j]) && 
+							!(pi == i && pj == j) {
+							
+							// 确保我们还没有为这个目标位置创建动画
+							posKey := [2]int{i, j}
+							if !animatedTiles[posKey] {
+								// 添加到动画列表
+								g.animations = append(g.animations, TileAnimation{
+									fromX:   pj,
+									fromY:   pi,
+									toX:     j,
+									toY:     i,
+									value:   g.previousBoard[pi][pj],
+									progress: 0,
+								})
+								
+								// 标记这个目标位置已经有动画了
+								animatedTiles[posKey] = true
+								found = true
+								break
+							}
+						}
+					}
+					if found {
+						break
+					}
+				}
+			}
+		}
+	}
+	
+	// 添加随机生成的方块
+	g.addRandomTile()
 }
 
 // 向上移动
@@ -426,6 +521,16 @@ func (g *Game) Update() error {
 		g.message = ""
 	}
 
+	// 更新动画状态
+	if g.animating {
+		g.animationProgress += 0.1
+		if g.animationProgress >= 1.0 {
+			g.animating = false
+			g.animationProgress = 0
+			g.animations = []TileAnimation{}
+		}
+	}
+
 	// 处理按键输入
 	if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
 		g.move(DirectionUp)
@@ -471,8 +576,179 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// 绘制游戏说明
 	text.Draw(screen, "方向键移动 | R键重置", scoreFont, screenWidth/2-110, 150, textColor)
 
-	// 绘制游戏棋盘
+	// 绘制游戏棋盘(只绘制背景和空格)
 	drawBoard(screen, g.board)
+	
+	// 棋盘位置
+	boardX := (screenWidth - (tileSize*boardSize + tileMargin*(boardSize-1))) / 2
+	boardY := 180
+	
+	// 如果正在动画中，绘制动画方块
+	if g.animating {
+		// 绘制动画中的方块
+		for _, anim := range g.animations {
+			// 计算插值位置
+			progress := easeOutQuad(g.animationProgress)
+			currentX := float64(boardX) + 
+				float64(anim.fromX)*(tileSize+tileMargin) + 
+				float64(anim.toX-anim.fromX)*(tileSize+tileMargin)*progress
+			currentY := float64(boardY) + 
+				float64(anim.fromY)*(tileSize+tileMargin) + 
+				float64(anim.toY-anim.fromY)*(tileSize+tileMargin)*progress
+			
+			// 获取方块颜色
+			var tileColor color.RGBA
+			if val, ok := tileColors[anim.value]; ok {
+				tileColor = val
+			} else {
+				tileColor = tileColors[2048]
+			}
+			
+			// 绘制方块
+			ebitenutil.DrawRect(screen, currentX, currentY, float64(tileSize), float64(tileSize), tileColor)
+			
+			// 绘制数字
+			numStr := fmt.Sprintf("%d", anim.value)
+			var tFace font.Face
+			
+			// 根据数字长度选择字体大小
+			if anim.value < 100 {
+				tFace = boldFont
+			} else if anim.value < 1000 {
+				tFace = boldFont
+			} else {
+				tFace = boldFont
+			}
+			
+			// 计算文本位置
+			bounds, _ := font.BoundString(tFace, numStr)
+			textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+			textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
+			
+			textX := int(currentX) + (tileSize-textWidth)/2
+			textY := int(currentY) + (tileSize+textHeight)/2
+			
+			// 选择文本颜色
+			textCol := textColor
+			if anim.value > 4 {
+				textCol = textColorLight
+			}
+			
+			// 绘制数字
+			text.Draw(screen, numStr, tFace, textX, textY, textCol)
+		}
+		
+		// 绘制静止的方块(非动画方块)
+		for i := 0; i < boardSize; i++ {
+			for j := 0; j < boardSize; j++ {
+				// 跳过正在动画的方块位置
+				isAnimating := false
+				for _, anim := range g.animations {
+					if anim.toX == j && anim.toY == i {
+						isAnimating = true
+						break
+					}
+				}
+				
+				if !isAnimating && g.board[i][j] > 0 {
+					// 计算方块位置
+					x := boardX + j*(tileSize+tileMargin)
+					y := boardY + i*(tileSize+tileMargin)
+					
+					// 获取方块颜色
+					var tileColor color.RGBA
+					if val, ok := tileColors[g.board[i][j]]; ok {
+						tileColor = val
+					} else {
+						tileColor = tileColors[2048]
+					}
+					
+					// 绘制方块
+					ebitenutil.DrawRect(screen, float64(x), float64(y), float64(tileSize), float64(tileSize), tileColor)
+					
+					// 绘制数字
+					numStr := fmt.Sprintf("%d", g.board[i][j])
+					var tFace font.Face
+					
+					if g.board[i][j] < 100 {
+						tFace = boldFont
+					} else if g.board[i][j] < 1000 {
+						tFace = boldFont
+					} else {
+						tFace = boldFont
+					}
+					
+					// 计算文本位置
+					bounds, _ := font.BoundString(tFace, numStr)
+					textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+					textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
+					
+					textX := x + (tileSize-textWidth)/2
+					textY := y + (tileSize+textHeight)/2
+					
+					// 选择文本颜色
+					textCol := textColor
+					if g.board[i][j] > 4 {
+						textCol = textColorLight
+					}
+					
+					// 绘制数字
+					text.Draw(screen, numStr, tFace, textX, textY, textCol)
+				}
+			}
+		}
+	} else {
+		// 正常绘制所有方块(非动画状态)
+		for i := 0; i < boardSize; i++ {
+			for j := 0; j < boardSize; j++ {
+				if g.board[i][j] > 0 {
+					// 计算方块位置
+					x := boardX + j*(tileSize+tileMargin)
+					y := boardY + i*(tileSize+tileMargin)
+					
+					// 获取方块颜色
+					var tileColor color.RGBA
+					if val, ok := tileColors[g.board[i][j]]; ok {
+						tileColor = val
+					} else {
+						tileColor = tileColors[2048]
+					}
+					
+					// 绘制方块
+					ebitenutil.DrawRect(screen, float64(x), float64(y), float64(tileSize), float64(tileSize), tileColor)
+					
+					// 绘制数字
+					numStr := fmt.Sprintf("%d", g.board[i][j])
+					var tFace font.Face
+					
+					if g.board[i][j] < 100 {
+						tFace = boldFont
+					} else if g.board[i][j] < 1000 {
+						tFace = boldFont
+					} else {
+						tFace = boldFont
+					}
+					
+					// 计算文本位置
+					bounds, _ := font.BoundString(tFace, numStr)
+					textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+					textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
+					
+					textX := x + (tileSize-textWidth)/2
+					textY := y + (tileSize+textHeight)/2
+					
+					// 选择文本颜色
+					textCol := textColor
+					if g.board[i][j] > 4 {
+						textCol = textColorLight
+					}
+					
+					// 绘制数字
+					text.Draw(screen, numStr, tFace, textX, textY, textCol)
+				}
+			}
+		}
+	}
 
 	// 如果游戏胜利，显示胜利信息
 	if g.win && g.showWin {
@@ -523,48 +799,8 @@ func drawBoard(screen *ebiten.Image, board [boardSize][boardSize]int) {
 			x := boardX + j*(tileSize+tileMargin)
 			y := boardY + i*(tileSize+tileMargin)
 			
-			// 获取格子颜色
-			var tileColor color.RGBA
-			if val, ok := tileColors[board[i][j]]; ok {
-				tileColor = val
-			} else {
-				tileColor = tileColors[2048] // 超过2048的数字使用2048的颜色
-			}
-			
-			// 绘制格子背景
-			ebitenutil.DrawRect(screen, float64(x), float64(y), float64(tileSize), float64(tileSize), tileColor)
-			
-			// 如果不是空格，绘制数字
-			if board[i][j] > 0 {
-				numStr := fmt.Sprintf("%d", board[i][j])
-				var tFace font.Face
-				
-				// 根据数字长度选择字体大小
-				if board[i][j] < 100 {
-					tFace = boldFont
-				} else if board[i][j] < 1000 {
-					tFace = boldFont
-				} else {
-					tFace = boldFont
-				}
-				
-				// 修正: 更准确地计算文本位置使其居中
-				bounds, _ := font.BoundString(tFace, numStr)
-				textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
-				textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
-				
-				textX := x + (tileSize-textWidth)/2
-				textY := y + (tileSize+textHeight)/2
-				
-				// 选择文本颜色
-				textCol := textColor
-				if board[i][j] > 4 {
-					textCol = textColorLight
-				}
-				
-				// 绘制数字
-				text.Draw(screen, numStr, tFace, textX, textY, textCol)
-			}
+			// 绘制空白格背景
+			ebitenutil.DrawRect(screen, float64(x), float64(y), float64(tileSize), float64(tileSize), emptyTileColor)
 		}
 	}
 }
@@ -695,4 +931,9 @@ func loadFonts() {
 		DPI:     72,
 		Hinting: font.HintingFull,
 	})
+}
+
+// 缓动函数：缓出二次方
+func easeOutQuad(t float64) float64 {
+	return t * (2 - t)
 } 
