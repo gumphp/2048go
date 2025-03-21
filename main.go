@@ -802,9 +802,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// 绘制游戏标题
 	text.Draw(screen, "2048", titleFont, screenWidth/2-50, 60, textColor)
 
+	// 计算分数面板位置，使两侧边距相等
+	panelWidth := 100
+	leftPanelX := (screenWidth / 2 - panelWidth) / 2 - 45
+	rightPanelX := screenWidth / 2 + (screenWidth / 2 - panelWidth) / 2 + 45
+	
 	// 绘制分数
-	drawScorePanel(screen, "分数", g.score, 30, 90)
-	drawScorePanel(screen, "最高分", g.bestScore, screenWidth-100, 90)
+	drawScorePanel(screen, "分数", g.score, leftPanelX, 90)
+	drawScorePanel(screen, "最高分", g.bestScore, rightPanelX, 90)
 
 	// 绘制游戏说明
 	instructionText := "R键重置 | S键保存 | L键加载"
@@ -1131,15 +1136,28 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 // 绘制分数面板
 func drawScorePanel(screen *ebiten.Image, title string, score int, x, y int) {
+	panelWidth := 100  // 调整面板宽度，使左右间距一致
+	panelHeight := 60
+	
 	// 绘制背景
-	ebitenutil.DrawRect(screen, float64(x), float64(y), 90, 60, boardColor)
+	ebitenutil.DrawRect(screen, float64(x), float64(y), float64(panelWidth), float64(panelHeight), boardColor)
+	
+	// 计算标题文本宽度居中显示
+	titleBounds, _ := font.BoundString(scoreFont, title)
+	titleWidth := (titleBounds.Max.X - titleBounds.Min.X).Ceil()
+	titleX := x + (panelWidth - titleWidth) / 2
 	
 	// 绘制标题
-	text.Draw(screen, title, scoreFont, x+45-len(title)*4, y+20, textColorLight)
+	text.Draw(screen, title, scoreFont, titleX, y+20, textColorLight)
+	
+	// 计算分数文本宽度居中显示
+	scoreText := fmt.Sprintf("%d", score)
+	scoreBounds, _ := font.BoundString(boldFont, scoreText)
+	scoreWidth := (scoreBounds.Max.X - scoreBounds.Min.X).Ceil()
+	scoreX := x + (panelWidth - scoreWidth) / 2
 	
 	// 绘制分数
-	scoreText := fmt.Sprintf("%d", score)
-	text.Draw(screen, scoreText, boldFont, x+45-len(scoreText)*7, y+45, textColorLight)
+	text.Draw(screen, scoreText, boldFont, scoreX, y+45, textColorLight)
 }
 
 // 绘制棋盘
