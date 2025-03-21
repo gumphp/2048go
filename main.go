@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"time"
@@ -65,12 +66,19 @@ var (
 // 移动动画的持续时间
 const animationDuration = 10
 
+// 方块动画类型
+const (
+	AnimationMove = iota // 移动动画
+	AnimationMerge       // 合并动画
+)
+
 // 方块动画状态
 type TileAnimation struct {
 	fromX, fromY int
 	toX, toY     int
 	value        int
 	progress     float64
+	animType     int   // 动画类型
 }
 
 // Game 代表游戏状态
@@ -87,6 +95,7 @@ type Game struct {
 	animating         bool         // 是否正在执行动画
 	animationProgress float64      // 动画进度 (0.0 - 1.0)
 	animations        []TileAnimation // 方块动画列表
+	lastMoveDirection int          // 最后一次移动的方向
 }
 
 // 初始化游戏
@@ -100,6 +109,7 @@ func NewGame() *Game {
 		animating:        false,
 		animationProgress: 0,
 		animations:       []TileAnimation{},
+		lastMoveDirection: -1,
 	}
 	g.initBoard()
 	return g
@@ -212,6 +222,9 @@ func (g *Game) move(direction int) bool {
 		return false
 	}
 
+	// 保存最后一次移动方向
+	g.lastMoveDirection = direction
+
 	// 保存移动前的棋盘状态用于动画
 	for i := 0; i < boardSize; i++ {
 		for j := 0; j < boardSize; j++ {
@@ -257,76 +270,143 @@ func (g *Game) move(direction int) bool {
 func (g *Game) prepareAnimations() {
 	g.animations = []TileAnimation{}
 	
-	// 标记当前棋盘上的方块，用于识别新生成的方块
-	currentTiles := make(map[[2]int]bool)
+	// 记录已处理的目标格子，避免多个方块同时合并到同一个格子
+	mergedCells := make(map[[2]int]bool)
+	
+	// 根据移动方向决定遍历顺序
+	var rowOrder, colOrder []int
+	
+	// 初始化默认顺序
+	rowOrder = make([]int, boardSize)
+	colOrder = make([]int, boardSize)
+	for i := 0; i < boardSize; i++ {
+		rowOrder[i] = i
+		colOrder[i] = i
+	}
+	
+	// 根据移动方向调整遍历顺序
+	// 这样可以确保先处理移动方向前面的方块，避免后面的方块"穿过"前面的方块
+	switch g.lastMoveDirection {
+	case DirectionUp:
+		// 从上到下遍历
+	case DirectionRight:
+		// 从右到左遍历
+		for i, j := 0, boardSize-1; i < j; i, j = i+1, j-1 {
+			colOrder[i], colOrder[j] = colOrder[j], colOrder[i]
+		}
+	case DirectionDown:
+		// 从下到上遍历
+		for i, j := 0, boardSize-1; i < j; i, j = i+1, j-1 {
+			rowOrder[i], rowOrder[j] = rowOrder[j], rowOrder[i]
+		}
+	case DirectionLeft:
+		// 从左到右遍历
+	}
+	
+	// 跟踪当前棋盘上有方块的格子
+	currentPositions := make(map[[2]int]int) // 位置 -> 值
 	for i := 0; i < boardSize; i++ {
 		for j := 0; j < boardSize; j++ {
 			if g.board[i][j] != 0 {
-				currentTiles[[2]int{i, j}] = true
+				currentPositions[[2]int{i, j}] = g.board[i][j]
 			}
 		}
 	}
 	
 	// 遍历前一个状态的棋盘
-	for pi := 0; pi < boardSize; pi++ {
-		for pj := 0; pj < boardSize; pj++ {
+	for _, ri := range rowOrder {
+		for _, ci := range colOrder {
+			i, j := ri, ci
 			// 如果前一个状态该位置有方块
-			if g.previousBoard[pi][pj] != 0 {
-				// 查找该方块在当前棋盘的位置
-				found := false
-				value := g.previousBoard[pi][pj]
-				
-				// 如果是移动而非合并的情况，在当前棋盘中查找相同值的方块
-				for i := 0; i < boardSize; i++ {
-					for j := 0; j < boardSize; j++ {
-						// 如果当前棋盘有相同值的方块，并且不在原位置
-						if g.board[i][j] == value && !(i == pi && j == pj) && !found {
-							// 为这个方块创建移动动画
-							g.animations = append(g.animations, TileAnimation{
-								fromX:   pj,
-								fromY:   pi,
-								toX:     j,
-								toY:     i,
-								value:   value,
-								progress: 0,
-							})
-							
-							// 标记该方块已经找到，避免重复添加
-							currentTiles[[2]int{i, j}] = false
-							found = true
-							break
+			if g.previousBoard[i][j] != 0 {
+				// 如果当前位置没有方块或者值不同，说明方块发生了移动或合并
+				if g.board[i][j] == 0 || g.board[i][j] != g.previousBoard[i][j] {
+					// 查找方块移动的目标位置
+					found := false
+					prevValue := g.previousBoard[i][j]
+					
+					// 计算移动方向的搜索范围
+					var rowRange, colRange []int
+					switch g.lastMoveDirection {
+					case DirectionUp:
+						rowRange = make([]int, i+1)
+						for r := 0; r <= i; r++ {
+							rowRange[r] = r
+						}
+						colRange = []int{j}
+					case DirectionRight:
+						rowRange = []int{i}
+						colRange = make([]int, boardSize-j)
+						for c := 0; c < boardSize-j; c++ {
+							colRange[c] = j + c
+						}
+					case DirectionDown:
+						rowRange = make([]int, boardSize-i)
+						for r := 0; r < boardSize-i; r++ {
+							rowRange[r] = i + r
+						}
+						colRange = []int{j}
+					case DirectionLeft:
+						rowRange = []int{i}
+						colRange = make([]int, j+1)
+						for c := 0; c <= j; c++ {
+							colRange[c] = c
 						}
 					}
-					if found {
-						break
-					}
-				}
-				
-				// 如果没找到相同值的方块，可能是被合并了
-				if !found {
-					// 查找值是原来两倍的方块（合并结果）
-					mergedValue := value * 2
-					for i := 0; i < boardSize; i++ {
-						for j := 0; j < boardSize; j++ {
-							if g.board[i][j] == mergedValue && currentTiles[[2]int{i, j}] {
+					
+					// 首先查找相同值的方块（移动的情况）
+					for _, r := range rowRange {
+						for _, c := range colRange {
+							pos := [2]int{r, c}
+							if val, exists := currentPositions[pos]; exists && val == prevValue {
 								// 为这个方块创建移动动画
 								g.animations = append(g.animations, TileAnimation{
-									fromX:   pj,
-									fromY:   pi,
-									toX:     j,
-									toY:     i,
-									value:   value,
+									fromX:    j,
+									fromY:    i,
+									toX:      c,
+									toY:      r,
+									value:    prevValue,
 									progress: 0,
+									animType: AnimationMove,
 								})
 								
-								// 标记该位置已处理过
-								currentTiles[[2]int{i, j}] = false
+								// 从当前位置列表中删除，避免重复处理
+								delete(currentPositions, pos)
 								found = true
 								break
 							}
 						}
 						if found {
 							break
+						}
+					}
+					
+					// 如果没找到相同值的方块，查找合并的情况
+					if !found {
+						for _, r := range rowRange {
+							for _, c := range colRange {
+								pos := [2]int{r, c}
+								if val, exists := currentPositions[pos]; exists && val == prevValue*2 && !mergedCells[pos] {
+									// 为这个方块创建合并动画
+									g.animations = append(g.animations, TileAnimation{
+										fromX:    j,
+										fromY:    i,
+										toX:      c,
+										toY:      r,
+										value:    prevValue,
+										progress: 0,
+										animType: AnimationMerge,
+									})
+									
+									// 标记该位置已有合并动画
+									mergedCells[pos] = true
+									found = true
+									break
+								}
+							}
+							if found {
+								break
+							}
 						}
 					}
 				}
@@ -613,73 +693,20 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	
 	// 如果正在动画中，绘制动画方块
 	if g.animating {
-		// 绘制动画中的方块
-		for _, anim := range g.animations {
-			// 计算插值位置
-			progress := easeOutQuad(g.animationProgress)
-			currentX := float64(boardX) + 
-				float64(anim.fromX)*(tileSize+tileMargin) + 
-				float64(anim.toX-anim.fromX)*(tileSize+tileMargin)*progress
-			currentY := float64(boardY) + 
-				float64(anim.fromY)*(tileSize+tileMargin) + 
-				float64(anim.toY-anim.fromY)*(tileSize+tileMargin)*progress
-			
-			// 获取方块颜色
-			var tileColor color.RGBA
-			if val, ok := tileColors[anim.value]; ok {
-				tileColor = val
-			} else {
-				tileColor = tileColors[2048]
-			}
-			
-			// 绘制方块
-			ebitenutil.DrawRect(screen, currentX, currentY, float64(tileSize), float64(tileSize), tileColor)
-			
-			// 绘制数字
-			numStr := fmt.Sprintf("%d", anim.value)
-			var tFace font.Face
-			
-			// 根据数字长度选择字体大小
-			if anim.value < 100 {
-				tFace = boldFont
-			} else if anim.value < 1000 {
-				tFace = boldFont
-			} else {
-				tFace = boldFont
-			}
-			
-			// 计算文本位置
-			bounds, _ := font.BoundString(tFace, numStr)
-			textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
-			textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
-			
-			textX := int(currentX) + (tileSize-textWidth)/2
-			textY := int(currentY) + (tileSize+textHeight)/2
-			
-			// 选择文本颜色
-			textCol := textColor
-			if anim.value > 4 {
-				textCol = textColorLight
-			}
-			
-			// 绘制数字
-			text.Draw(screen, numStr, tFace, textX, textY, textCol)
-		}
-		
-		// 绘制静止的方块(非动画方块)
+		// 先绘制所有非动画方块
 		for i := 0; i < boardSize; i++ {
 			for j := 0; j < boardSize; j++ {
-				// 跳过正在动画的方块位置
-				isAnimating := false
+				// 检查是否是动画目标位置
+				isTarget := false
 				for _, anim := range g.animations {
 					if anim.toX == j && anim.toY == i {
-						isAnimating = true
+						isTarget = true
 						break
 					}
 				}
 				
-				if !isAnimating && g.board[i][j] > 0 {
-					// 计算方块位置
+				// 如果不是动画目标位置，并且当前有方块，则绘制静态方块
+				if !isTarget && g.board[i][j] > 0 {
 					x := boardX + j*(tileSize+tileMargin)
 					y := boardY + i*(tileSize+tileMargin)
 					
@@ -723,6 +750,150 @@ func (g *Game) Draw(screen *ebiten.Image) {
 					// 绘制数字
 					text.Draw(screen, numStr, tFace, textX, textY, textCol)
 				}
+			}
+		}
+		
+		// 然后绘制动画中的方块
+		for _, anim := range g.animations {
+			progress := easeOutQuad(g.animationProgress)
+			
+			// 计算动画位置
+			var currentX, currentY float64
+			
+			// 移动动画
+			currentX = float64(boardX) + float64(anim.fromX)*(tileSize+tileMargin) + 
+					   float64(anim.toX-anim.fromX)*(tileSize+tileMargin)*progress
+			currentY = float64(boardY) + float64(anim.fromY)*(tileSize+tileMargin) + 
+					   float64(anim.toY-anim.fromY)*(tileSize+tileMargin)*progress
+			
+			// 获取方块颜色
+			var tileColor color.RGBA
+			if val, ok := tileColors[anim.value]; ok {
+				tileColor = val
+			} else {
+				tileColor = tileColors[2048]
+			}
+			
+			// 如果是合并动画，添加缩放和透明度效果
+			var scale, alpha float64
+			if anim.animType == AnimationMerge && progress > 0.5 {
+				// 在移动完成后半段添加合并效果
+				// 先稍微放大
+				p := (progress - 0.5) * 2 // 将0.5-1.0映射到0-1.0
+				scale = 1.0 + 0.2*sinWave(p) // 使用正弦波实现缩放效果
+				
+				// 计算透明度变化
+				alpha = sinWave(p)
+			} else {
+				scale = 1.0
+				alpha = 1.0
+			}
+			
+			// 计算缩放后的尺寸和位置
+			scaledSize := float64(tileSize) * scale
+			offsetX := (scaledSize - float64(tileSize)) / 2
+			offsetY := (scaledSize - float64(tileSize)) / 2
+			
+			// 调整颜色透明度
+			if anim.animType == AnimationMerge && progress > 0.5 {
+				tileColor.A = uint8(255 * alpha)
+			}
+			
+			// 绘制方块
+			ebitenutil.DrawRect(screen, currentX-offsetX, currentY-offsetY, scaledSize, scaledSize, tileColor)
+			
+			// 如果是合并动画且在后半段，不绘制数字（会在目标格子绘制）
+			if !(anim.animType == AnimationMerge && progress > 0.85) {
+				// 绘制数字
+				numStr := fmt.Sprintf("%d", anim.value)
+				var tFace font.Face
+				
+				if anim.value < 100 {
+					tFace = boldFont
+				} else if anim.value < 1000 {
+					tFace = boldFont
+				} else {
+					tFace = boldFont
+				}
+				
+				// 计算文本位置
+				bounds, _ := font.BoundString(tFace, numStr)
+				textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+				textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
+				
+				textX := int(currentX) + int(scaledSize-float64(textWidth))/2
+				textY := int(currentY) + int(scaledSize+float64(textHeight))/2
+				
+				// 选择文本颜色
+				textCol := textColor
+				if anim.value > 4 {
+					textCol = textColorLight
+				}
+				
+				// 调整文本透明度
+				if anim.animType == AnimationMerge && progress > 0.5 {
+					textCol = color.RGBA{textCol.R, textCol.G, textCol.B, uint8(255 * alpha)}
+				}
+				
+				// 绘制数字
+				text.Draw(screen, numStr, tFace, textX, textY, textCol)
+			}
+			
+			// 如果是合并动画且在靠近结束阶段，绘制目标值的数字
+			if anim.animType == AnimationMerge && progress > 0.85 {
+				targetX := boardX + anim.toX*(tileSize+tileMargin)
+				targetY := boardY + anim.toY*(tileSize+tileMargin)
+				targetValue := anim.value * 2
+				
+				// 获取目标方块颜色
+				var targetColor color.RGBA
+				if val, ok := tileColors[targetValue]; ok {
+					targetColor = val
+				} else {
+					targetColor = tileColors[2048]
+				}
+				
+				// 计算从0到1的渐变进度
+				fadeInProgress := (progress - 0.85) / 0.15
+				
+				// 计算缩放效果
+				targetScale := 1.0 + 0.2*(1-fadeInProgress)
+				targetSize := float64(tileSize) * targetScale
+				targetOffsetX := (targetSize - float64(tileSize)) / 2
+				targetOffsetY := (targetSize - float64(tileSize)) / 2
+				
+				// 绘制目标方块
+				ebitenutil.DrawRect(screen, float64(targetX)-targetOffsetX, float64(targetY)-targetOffsetY, 
+									targetSize, targetSize, targetColor)
+				
+				// 绘制目标数字
+				numStr := fmt.Sprintf("%d", targetValue)
+				var tFace font.Face
+				
+				if targetValue < 100 {
+					tFace = boldFont
+				} else if targetValue < 1000 {
+					tFace = boldFont
+				} else {
+					tFace = boldFont
+				}
+				
+				// 计算文本位置
+				bounds, _ := font.BoundString(tFace, numStr)
+				textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+				textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil()
+				
+				textX := targetX + int(targetSize-float64(textWidth))/2
+				textY := targetY + int(targetSize+float64(textHeight))/2
+				
+				// 选择文本颜色
+				textCol := textColor
+				if targetValue > 4 {
+					textCol = textColorLight
+				}
+				
+				// 绘制数字
+				text.Draw(screen, numStr, tFace, textX, textY, textCol)
 			}
 		}
 	} else {
@@ -964,4 +1135,9 @@ func loadFonts() {
 // 缓动函数：缓出二次方
 func easeOutQuad(t float64) float64 {
 	return t * (2 - t)
+}
+
+// 正弦波函数 - 用于制作平滑的缩放和淡入淡出效果
+func sinWave(t float64) float64 {
+	return math.Sin(t * math.Pi / 2)
 } 
