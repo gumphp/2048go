@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"image/color"
+	"io/ioutil"
 	"log"
 	"math"
 	"math/rand"
@@ -81,6 +83,19 @@ type TileAnimation struct {
 	animType     int   // 动画类型
 }
 
+// 游戏进度文件路径
+const saveFilePath = "2048_save.json"
+
+// GameSave 用于保存游戏状态
+type GameSave struct {
+	Board     [boardSize][boardSize]int `json:"board"`
+	Score     int                       `json:"score"`
+	BestScore int                       `json:"best_score"`
+	GameOver  bool                      `json:"game_over"`
+	Win       bool                      `json:"win"`
+	ShowWin   bool                      `json:"show_win"`
+}
+
 // Game 代表游戏状态
 type Game struct {
 	board             [boardSize][boardSize]int
@@ -111,7 +126,13 @@ func NewGame() *Game {
 		animations:       []TileAnimation{},
 		lastMoveDirection: -1,
 	}
-	g.initBoard()
+	
+	// 尝试加载存档
+	if !g.loadGame() {
+		// 如果没有存档或加载失败，初始化新棋盘
+		g.initBoard()
+	}
+	
 	return g
 }
 
@@ -136,6 +157,9 @@ func (g *Game) resetGame() {
 	g.win = false
 	g.showWin = true
 	g.initBoard()
+	
+	// 删除存档文件
+	g.deleteSave()
 }
 
 // 添加随机方块
@@ -618,6 +642,91 @@ func (g *Game) moveLeft() bool {
 	return moved
 }
 
+// 保存游戏状态
+func (g *Game) saveGame(showMessage bool) {
+	// 创建保存对象
+	save := GameSave{
+		Board:     g.board,
+		Score:     g.score,
+		BestScore: g.bestScore,
+		GameOver:  g.gameOver,
+		Win:       g.win,
+		ShowWin:   g.showWin,
+	}
+
+	// 将对象序列化为JSON
+	data, err := json.Marshal(save)
+	if err != nil {
+		log.Printf("保存游戏失败: %v", err)
+		if showMessage {
+			g.showMessage("保存游戏失败", 60)
+		}
+		return
+	}
+
+	// 写入文件
+	err = ioutil.WriteFile(saveFilePath, data, 0644)
+	if err != nil {
+		log.Printf("写入存档文件失败: %v", err)
+		if showMessage {
+			g.showMessage("保存游戏失败", 60)
+		}
+		return
+	}
+
+	if showMessage {
+		g.showMessage("游戏已保存", 60)
+	}
+}
+
+// 加载游戏状态
+func (g *Game) loadGame() bool {
+	// 检查文件是否存在
+	if _, err := os.Stat(saveFilePath); os.IsNotExist(err) {
+		g.showMessage("没有找到存档", 60)
+		return false
+	}
+
+	// 读取文件
+	data, err := ioutil.ReadFile(saveFilePath)
+	if err != nil {
+		log.Printf("读取存档文件失败: %v", err)
+		g.showMessage("加载游戏失败", 60)
+		return false
+	}
+
+	// 解析JSON
+	var save GameSave
+	err = json.Unmarshal(data, &save)
+	if err != nil {
+		log.Printf("解析存档数据失败: %v", err)
+		g.showMessage("加载游戏失败", 60)
+		return false
+	}
+
+	// 恢复游戏状态
+	g.board = save.Board
+	g.score = save.Score
+	g.bestScore = save.BestScore
+	g.gameOver = save.GameOver
+	g.win = save.Win
+	g.showWin = save.ShowWin
+
+	g.showMessage("游戏已加载", 60)
+	return true
+}
+
+// 删除存档
+func (g *Game) deleteSave() {
+	if _, err := os.Stat(saveFilePath); !os.IsNotExist(err) {
+		err = os.Remove(saveFilePath)
+		if err != nil {
+			log.Printf("删除存档文件失败: %v", err)
+			return
+		}
+	}
+}
+
 // 更新游戏状态
 func (g *Game) Update() error {
 	// 如果有消息，减少显示时间
@@ -640,13 +749,22 @@ func (g *Game) Update() error {
 	// 处理按键输入
 	if !g.animating {  // 只有在没有动画时才处理输入
 		if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
-			g.move(DirectionUp)
+			if g.move(DirectionUp) {
+				// 移动后自动保存游戏状态，但不显示提醒
+				g.saveGame(false)
+			}
 		} else if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-			g.move(DirectionRight)
+			if g.move(DirectionRight) {
+				g.saveGame(false)
+			}
 		} else if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
-			g.move(DirectionDown)
+			if g.move(DirectionDown) {
+				g.saveGame(false)
+			}
 		} else if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
-			g.move(DirectionLeft)
+			if g.move(DirectionLeft) {
+				g.saveGame(false)
+			}
 		} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
 			// 重置游戏
 			g.resetGame()
@@ -656,7 +774,14 @@ func (g *Game) Update() error {
 			if g.win && g.showWin {
 				g.showWin = false
 				g.showMessage("继续游戏", 60)
+				g.saveGame(false)
 			}
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyS) {
+			// 手动保存游戏，显示提醒
+			g.saveGame(true)
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyL) {
+			// 手动加载游戏
+			g.loadGame()
 		}
 	}
 
@@ -682,7 +807,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	drawScorePanel(screen, "最高分", g.bestScore, screenWidth-100, 90)
 
 	// 绘制游戏说明
-	text.Draw(screen, "方向键移动 | R键重置", scoreFont, screenWidth/2-110, 150, textColor)
+	text.Draw(screen, "方向键移动 | R键重置 | S键保存 | L键加载", scoreFont, screenWidth/2-170, 150, textColor)
 
 	// 绘制游戏棋盘(只绘制背景和空格)
 	drawBoard(screen, g.board)
@@ -1041,6 +1166,9 @@ func main() {
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
+	
+	// 程序正常退出时保存游戏并显示提醒
+	game.saveGame(true)
 }
 
 // 加载字体
